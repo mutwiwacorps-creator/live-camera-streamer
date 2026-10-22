@@ -17,17 +17,25 @@ import io.livekit.android.LiveKit
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.room.Room
 import io.livekit.android.room.track.VideoTrack
+import io.livekit.android.renderer.SurfaceViewRenderer
 import io.livekit.android.token.TokenRequestOptions
 import io.livekit.android.token.TokenSource
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import org.webrtc.SurfaceViewRenderer
 
 class MainActivity : Activity() {
 
     private lateinit var status: TextView
     private lateinit var roomInput: EditText
     private lateinit var videoView: SurfaceViewRenderer
+
+    private val appScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private var room: Room? = null
     private var eventJob: Job? = null
@@ -57,7 +65,7 @@ class MainActivity : Activity() {
         layout.addView(title)
 
         status = TextView(this).apply {
-            text = "Enter the same room name on both phones."
+            text = "Use the same room name on both phones."
             textSize = 16f
             setTextColor(Color.DKGRAY)
             gravity = Gravity.CENTER
@@ -68,8 +76,9 @@ class MainActivity : Activity() {
         roomInput = EditText(this).apply {
             hint = "Room name"
             setText("infinix-room")
-            singleLine = true
+            setSingleLine(true)
         }
+
         layout.addView(
             roomInput,
             LinearLayout.LayoutParams(
@@ -79,6 +88,7 @@ class MainActivity : Activity() {
         )
 
         videoView = SurfaceViewRenderer(this)
+
         layout.addView(
             videoView,
             LinearLayout.LayoutParams(
@@ -90,7 +100,9 @@ class MainActivity : Activity() {
 
         layout.addView(makeButton("Broadcast camera and microphone") {
             pendingBroadcast = true
-            if (checkSelfPermission(Manifest.permission.CAMERA) !=
+
+            if (
+                checkSelfPermission(Manifest.permission.CAMERA) !=
                 PackageManager.PERMISSION_GRANTED ||
                 checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
                 PackageManager.PERMISSION_GRANTED
@@ -140,7 +152,8 @@ class MainActivity : Activity() {
         )
 
         if (requestCode == PERMISSION_REQUEST) {
-            val granted = grantResults.isNotEmpty() &&
+            val granted =
+                grantResults.isNotEmpty() &&
                 grantResults.all {
                     it == PackageManager.PERMISSION_GRANTED
                 }
@@ -149,7 +162,7 @@ class MainActivity : Activity() {
                 startRoom(true)
             } else {
                 status.text =
-                    "Camera and microphone permissions are required to broadcast."
+                    "Camera and microphone permissions are required."
             }
         }
     }
@@ -162,7 +175,7 @@ class MainActivity : Activity() {
             return
         }
 
-        lifecycleScope.launch {
+        appScope.launch {
             stopRoom()
             status.text = "Connecting to LiveKit..."
 
@@ -171,11 +184,12 @@ class MainActivity : Activity() {
                 room = newRoom
                 newRoom.initVideoRenderer(videoView)
 
-                eventJob = launch {
+                eventJob = appScope.launch {
                     newRoom.events.collect { event ->
                         when (event) {
                             is RoomEvent.TrackSubscribed -> {
                                 val track = event.track
+
                                 if (track is VideoTrack) {
                                     track.addRenderer(videoView)
                                     status.text =
@@ -185,6 +199,7 @@ class MainActivity : Activity() {
                                         "Connected. Receiving live stream."
                                 }
                             }
+
                             else -> Unit
                         }
                     }
@@ -214,11 +229,12 @@ class MainActivity : Activity() {
                 if (broadcast) {
                     newRoom.localParticipant.setCameraEnabled(true)
                     newRoom.localParticipant.setMicrophoneEnabled(true)
+
                     status.text =
-                        "Broadcasting camera and microphone in '$roomName'."
+                        "Broadcasting in '$roomName'."
                 } else {
                     status.text =
-                        "Watching room '$roomName'. Waiting for broadcaster..."
+                        "Watching '$roomName'. Waiting for broadcaster..."
                 }
             } catch (e: Exception) {
                 status.text =
@@ -238,11 +254,11 @@ class MainActivity : Activity() {
         room = null
 
         if (oldRoom != null) {
-            lifecycleScope.launch {
+            appScope.launch {
                 try {
                     oldRoom.disconnect()
                 } catch (_: Exception) {
-                    // Ignore disconnect errors while stopping.
+                    // Ignore errors during disconnect.
                 }
             }
         }
@@ -252,15 +268,21 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         eventJob?.cancel()
-        room?.let { currentRoom ->
-            lifecycleScope.launch {
+
+        val oldRoom = room
+        room = null
+
+        if (oldRoom != null) {
+            appScope.launch {
                 try {
-                    currentRoom.disconnect()
+                    oldRoom.disconnect()
                 } catch (_: Exception) {
-                    // Ignore disconnect errors during shutdown.
+                    // Ignore errors during shutdown.
                 }
             }
         }
+
         super.onDestroy()
+        appScope.cancel()
     }
 }
